@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -93,6 +94,11 @@ func Refresh(refreshToken, clientID, tokenEndpoint, oid, tid string) (TokenSet, 
 // consented Microsoft resource, such as the Designer App Service used to
 // download generated images. The caller must persist a rotated refresh token.
 func RefreshWithScope(refreshToken, clientID, scope string) (TokenSet, error) {
+	return RefreshWithScopeContext(context.Background(), outbound.HTTPClient(), refreshToken, clientID, scope)
+}
+
+// RefreshWithScopeContext honors request cancellation and an account-bound proxy.
+func RefreshWithScopeContext(ctx context.Context, client *http.Client, refreshToken, clientID, scope string) (TokenSet, error) {
 	form := url.Values{}
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
@@ -102,7 +108,7 @@ func RefreshWithScope(refreshToken, clientID, scope string) (TokenSet, error) {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("scope", scope)
-	return requestToken(form)
+	return requestTokenContext(ctx, client, form)
 }
 
 func ROPC(username, password string) (TokenSet, error) {
@@ -173,12 +179,18 @@ func requestTokenTenant(form url.Values, endpoint string, caller string, oid, ti
 }
 
 func requestToken(form url.Values) (TokenSet, error) {
-	req, err := http.NewRequest(http.MethodPost, TokenEndpoint(), strings.NewReader(form.Encode()))
+	return requestTokenContext(context.Background(), outbound.HTTPClient(), form)
+}
+
+func requestTokenContext(ctx context.Context, client *http.Client, form url.Values) (TokenSet, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenEndpoint(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return TokenSet{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := outbound.HTTPClient().Do(req)
+	local := *client
+	local.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := local.Do(req)
 	if err != nil {
 		return TokenSet{}, err
 	}

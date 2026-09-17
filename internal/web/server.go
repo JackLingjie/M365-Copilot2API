@@ -150,6 +150,8 @@ func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountTok
 }
 
 type Server struct {
+	coworkMu             sync.Mutex
+	coworkAccounts       map[string]*coworkAccountState
 	mu                   sync.Mutex
 	tokens               *auth.Store
 	accountPool          *accountHealth
@@ -1390,7 +1392,8 @@ func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	jsonOut(w, map[string]any{"object": "list", "data": modelCatalog()})
+	data, discoveryError := s.catalogForRequest(r)
+	jsonOut(w, map[string]any{"object": "list", "data": data, "cowork_discovery_error": discoveryError})
 }
 
 // adminModelTest 由控制台模型测试调用，通过管理员会话鉴权，不依赖明文 API Key
@@ -1406,6 +1409,27 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.NewDecoder(r.Body).Decode(&b) != nil || strings.TrimSpace(b.Model) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json: model required")
+		return
+	}
+	if isCoworkModel(b.Model) {
+		start := time.Now()
+		out, raw, status, err := s.runOpenAIAdapter(r, oaiReq{Model: b.Model, AccountID: b.AccountID, Messages: []oaiMsg{{Role: "user", Content: `Say "OK" in one word.`}}})
+		if err != nil || status >= 400 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			w.Write(raw)
+			return
+		}
+		choices, _ := out["choices"].([]any)
+		reply := ""
+		if len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if msg, ok := choice["message"].(map[string]any); ok {
+					reply, _ = msg["content"].(string)
+				}
+			}
+		}
+		jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": reply, "latency_ms": time.Since(start).Milliseconds()})
 		return
 	}
 	acc, err := s.resolveAccount(b.AccountID)
@@ -1447,14 +1471,14 @@ func (s *Server) openaiModels(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	data := modelCatalog()
+	data, discoveryError := s.catalogForRequest(r)
 	created := time.Now().Unix()
 	for _, model := range data {
 		model["created"] = created
 	}
 	// Codex v0.144.5 requires `models`, while OpenAI-compatible clients use
 	// `data`. Keep both aliases backed by the same catalog.
-	jsonOut(w, map[string]any{"object": "list", "data": data, "models": data})
+	jsonOut(w, map[string]any{"object": "list", "data": data, "models": data, "cowork_discovery_error": discoveryError})
 }
 
 type oaiMsg struct {
@@ -1659,6 +1683,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	var body oaiReq
 	if err := json.Unmarshal(raw, &body); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
+		return
+	}
+	if isCoworkModel(body.Model) {
+		s.coworkChat(w, r, &body)
 		return
 	}
 	responseFormat := body.ResponseFormat

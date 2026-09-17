@@ -457,6 +457,12 @@ curl http://127.0.0.1:4141/v1/messages \
 - 推理强度还可通过请求内的 `reasoning_effort` 参数调整。
 - M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台配置导入。
 
+### Cowork 模型（可选）
+
+配置 `M365_COWORK_BASE_URL` 后，网关会通过 Cowork 自己的 `/v1/models` 动态发现账号可用模型，提供 `cowork-<上游 ID>` 和 `cowork-auto`。模型及思考强度以实际目录为准，不需要为每个新增模型修改代码。已验证的样本包括 GPT-5.5、Opus 5、Sonnet 5 和 Fable 5.1。
+
+当前提供文本聊天及流式接口，不支持客户端工具调用或图片附件；与 ChatHub 的会话、模型和 OAuth audience 分开处理。配置步骤、账号选择、协议说明和限制见 [Cowork 使用说明](docs/cowork.md)。
+
 ## 内容键会话复用原理
 
 多账号场景下，网关会用「内容键（context key）」把请求复用到已有云端对话上，机制对标 DeepSeek 式上下文缓存：**同一个对话上下文只维护一条云端会话，命中时只把增量新消息发给上游**，不仅省去重建上下文的开销，也更贴近多轮工具的体验。核心实现在 `internal/web/session_resolver.go`。
